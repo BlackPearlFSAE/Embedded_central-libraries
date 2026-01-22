@@ -1,78 +1,100 @@
 #include <Arduino.h>
 #include <syncTime_util.h>
+// #include <RTClib.h>  // For RTC_DS3231
+
+unsigned long sync_point = 0;  // millis() when last synced
+// Sync status flag
+bool localTimeIsSynced = false;
 
 // ============================================================================
-// TIME FORMATTING and SYNC TIME HELPER FUNCTIONS
+// CORE TIME FUNCTIONS
 // ============================================================================
-bool timeIsSynchronized = false;
-uint64_t baseTimestamp = 0;
-uint64_t syncMillis = 0; // the time that has been sync
 
-// getMCUtime that has been synchronized with time source
-unsigned long long getSynchronizedTime() {
-  if (timeIsSynchronized) {
-    // We have synced at least once - calculate time based on millis() offset
-    unsigned long currentMillis = millis();
-    unsigned long elapsedMillis = currentMillis - syncMillis;
-    
-    // Return base timestamp + elapsed time
-    return baseTimestamp + (unsigned long long)elapsedMillis;
-    
-  } else {
-    // Not synced yet - return 0 or a flag value
-    return 0ULL;
-  }
+/**
+ * Set absolute time from ANY source (RTC, NTP, Server, Manual)
+ * Accepts: Unix timestamp in milliseconds
+ * Also sets ESP32 internal RTC via settimeofday()
+**/
+void syncTime_setSyncPoint(uint64_t &localTime , uint64_t Timesource_s) {
+  // Set ESP32 internal RTC via settimeofday
+
+  localTime = Timesource_s;
+  sync_point = millis();  // Mark sync point
+  localTimeIsSynced = true;
 }
 
-// void syncDevice_to_serverTime(uint64_t serverTimeMs) {
-//   baseTimestamp = serverTimeMs;
-//   syncMillis = millis();
-//   timeIsSynchronized = true;
-  
-//   // Show synchronized time in both formats
-//   char syncedTime[32] = "";
-//   formatDateTimeBangkok(syncedTime, serverTimeMs);
-  
-//   Serial.println("\n╔════════════════════════════════════════╗");
-//   Serial.println("║      TIME SYNCHRONIZED SUCCESS!        ║");
-//   Serial.println("╠════════════════════════════════════════╣");
-//   Serial.print("║ Unix Time:   ");
-//   Serial.print(serverTimeMs / 1000ULL);
-//   Serial.println(" sec       ║");
-//   Serial.print("║ Bangkok Time: ");
-//   Serial.print(syncedTime);
-//   Serial.println("   ║");
-//   Serial.print("║ Sync Millis:  ");
-//   Serial.print(syncMillis);
-//   Serial.println(" ms            ║");
-//   Serial.println("║ Time will now run independently!       ║");
-//   Serial.println("╚════════════════════════════════════════╝\n");
-// }
-
-void syncDevice_to_serverTime(uint64_t serverTimeMs) {
-  const unsigned long long MIN_DRIFT_MS = 1000ULL;
-  // Drifted about 1 s should be enough to resync
-  if (timeIsSynchronized) {
-    uint64_t nowMs = getSynchronizedTime();
-    int64_t diff = (int64_t)serverTimeMs - (int64_t)nowMs;
-    if (llabs(diff) < (long long)MIN_DRIFT_MS) return; // no-op if drift small
-  }
-  baseTimestamp = serverTimeMs;
-  syncMillis = millis();
-  timeIsSynchronized = true;
+uint32_t syncTime_getElapse_ms(){
+  return millis()- sync_point;
 }
 
+/**
+ * Get current device time (absolute if synced, relative if not)
+ * Returns: Unix timestamp in milliseconds
+ * This auto-calculates elapsed time since last sync
+ */
+uint64_t syncTime_calcRelative_ms(uint64_t localTime_s) {
+  if (!localTimeIsSynced) {
+    // Not synced - return device uptime
+    return (uint64_t)millis();
+  }
+  uint32_t elapse_ms = syncTime_getElapse_ms();
+  return localTime_s + (uint64_t)elapse_ms;
+}
 
-void formatDateTime(char* outBuf, uint64_t timestampMs) {
-  // Convert milliseconds to seconds
-  uint64_t timestampSec = timestampMs / 1000ULL;
-  
-  // This gives UTC time
-  time_t rawtime = (time_t)timestampSec;
-  struct tm * timeinfo;
-  timeinfo = gmtime(&rawtime);
-  
-  // char buffer[32];
+/**
+ * Check if device time has been synchronized
+ * Returns: true if synced with external source, false if using millis()
+ */
+bool syncTime_isSynced() {
+  return localTimeIsSynced;
+}
+
+/**
+ * Get current drift between device time and external source
+ * Returns: drift in ms (positive = device ahead, negative = device behind)
+ */
+int64_t syncTime_getDrift(uint64_t localTime_s, uint64_t TimeSource_ms) {
+  uint64_t currentTime = syncTime_calcRelative_ms(localTime_s);
+  return (int64_t)currentTime - (int64_t)TimeSource_ms;
+}
+
+/**
+ * Sync from external source (Server/NTP) with optional RTC write-back
+ * Only syncs if drift exceeds threshold
+ */
+bool syncTime_ifDrifted(uint64_t &localTime, uint64_t TimeSource_ms,
+                           uint64_t driftThreshold_ms) {
+  // Check drift first
+  int64_t drift = syncTime_getDrift(localTime, TimeSource_ms);
+
+  if (llabs(drift) < (long long)driftThreshold_ms) {
+    return false;  // Drift within tolerance, skip sync
+  }
+
+  // Update device time
+  syncTime_setSyncPoint(localTime, TimeSource_ms);
+
+  return true;
+}
+
+// ============================================================================
+// FORMATTING FUNCTIONS - Timezone Support
+// ============================================================================
+
+/**
+ * Format Unix timestamp to human-readable string with timezone offset
+ * Parameters:
+ *   - outBuf: Output buffer (minimum 32 chars)
+ *   - unixMs: Unix timestamp in milliseconds
+ *   - timezoneOffsetHours: Hours offset from UTC (e.g., 7 for Bangkok, -5 for EST)
+ */
+void syncTime_formatUnix(char* outBuf, uint64_t unixMs, int timezoneOffsetHours) {
+  // Convert to seconds and apply timezone offset
+  uint64_t unixSec = (unixMs / 1000ULL) + (timezoneOffsetHours * 3600);
+
+  time_t rawtime = (time_t)unixSec;
+  struct tm* timeinfo = gmtime(&rawtime);
+
   // Format: YYYY-MM-DD HH:MM:SS
   sprintf(outBuf, "%04d-%02d-%02d %02d:%02d:%02d",
           timeinfo->tm_year + 1900,
@@ -81,30 +103,11 @@ void formatDateTime(char* outBuf, uint64_t timestampMs) {
           timeinfo->tm_hour,
           timeinfo->tm_min,
           timeinfo->tm_sec);
-
 }
 
-void formatDateTimeBangkok(char* outBuf, uint64_t timestampMs) {
-  // Convert milliseconds to seconds
-  uint64_t timestampSec = timestampMs / 1000ULL;
-  // Add 7 hours for Bangkok timezone (UTC+7)
-  timestampSec += (7 * 3600);
-  
-  time_t rawtime = (time_t)timestampSec;
-  struct tm * timeinfo;
-  timeinfo = gmtime(&rawtime);
-  
-  // Format: YYYY-MM-DD HH:MM:SS
-  sprintf(outBuf, "%04d-%02d-%02d %02d:%02d:%02d",
-          timeinfo->tm_year + 1900,
-          timeinfo->tm_mon + 1,
-          timeinfo->tm_mday,
-          timeinfo->tm_hour,
-          timeinfo->tm_min,
-          timeinfo->tm_sec);
+/**
+ * Convenience wrapper for UTC formatting
+ */
+void syncTime_formatUnix_UTC(char* outBuf, uint64_t unixMs) {
+  syncTime_formatUnix(outBuf, unixMs, 0);
 }
-
-
-
-
-

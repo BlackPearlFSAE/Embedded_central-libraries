@@ -1,5 +1,10 @@
 #include <stddef.h> // for size_t
 #include <cstdint>
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+
+// External Serial mutex (defined in node.cpp) - prevents garbled output across cores
+extern SemaphoreHandle_t serialMutex;
 
 typedef struct {
   bool isRegistered = false;
@@ -28,6 +33,7 @@ private:
 
     // ownership flags for pointer members (set by constructor)
     bool _owns_webSocket = false;
+    bool _owns_socketstatus = false;
 public:
   // Accessible websocket related class , for developer to call in main.cpp
     socketstatus *webSocketstatus = nullptr;    
@@ -88,3 +94,26 @@ private:
 // }
 
 */
+
+// ============================================================================
+// SERVER TIME SYNC (NEW - Standalone functions for external time source)
+// ============================================================================
+
+/**
+ * Request server time via WebSocket
+ * Server should respond with {"type": "time_response", "server_time": <unix_ms>}
+ */
+void BPMobile_requestServerTime(WebSocketsClient* ws);
+
+/**
+ * Parse server time from incoming WebSocket message
+ * Call this in your WebSocket message handler
+ * Returns: server timestamp in ms, or 0 if message doesn't contain time
+ */
+uint64_t BPMobile_parseServerTime(const char* payload);
+
+/**
+ * Get last received server time
+ * Returns: last server timestamp in ms, or 0 if never received
+ */
+uint64_t BPMobile_getLastServerTime();
