@@ -3,11 +3,6 @@
 
 #include <FS.h>
 
-#define DEFAULT_SD_LOG_INTERVAL 1000
-#define DEFAULT_SD_FLUSH_INTERVAL 5000
-#define DEFAULT_SD_CLOSE_INTERVAL 15000
-#define DEFAULT_SD_ROW_LIMIT 1000
-
 // ============================================================================
 // SD CARD INITIALIZATION
 // ============================================================================
@@ -46,8 +41,5 @@ void SD32_appendBulkDataPersistent(AppenderFunc* appenders, void** dataArray, si
 
 // Force flush (call before power off or SD removal)
 void SD32_flushPersistentFile();
-
-// Get current file size (for size-based rotation)
-size_t SD32_getPersistentFileSize();
 
 #endif
